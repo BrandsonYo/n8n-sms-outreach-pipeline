@@ -1,0 +1,1102 @@
+{
+  "updatedAt": "2026-03-16T22:29:55.381Z",
+  "createdAt": "2026-03-10T00:33:15.967Z",
+  "id": "YOUR_WF1_WORKFLOW_ID",
+  "name": "SMS Outreach (Outbound)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## SMS Outreach (Outbound)\n\nRuns every 30 minutes, 9am\u20135pm NZT (NZDT).\n\n**What it does:**\n- Reads all leads from the Leads tab\n- Sends initial messages to new leads (cap: 25/run, 50/day)\n- Sends Followup 1 to leads where initial was delivered 3h+ ago, no reply\n- Sends Followup 2 to leads where F1 was delivered 21h+ ago, no reply\n- Writes PENDING to the timestamp column immediately after each send\n- Workflow 2 overwrites PENDING with confirmed timestamp on delivery, or clears it on failure\n- Waits 60s between each SMS to avoid rate limits\n\n**Why it exists:**\nAutomates the cold outreach cadence so the Mac doesn't need to stay on.",
+        "height": 340,
+        "width": 460,
+        "color": 4
+      },
+      "id": "bb41f252-1d1d-434b-9780-9bf2e126e6be",
+      "name": "Workflow Description",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -208,
+        64
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0,30 20-23 * * *"
+            },
+            {
+              "field": "cronExpression",
+              "expression": "0,30 0-3 * * *"
+            }
+          ]
+        }
+      },
+      "id": "d03b1b94-ce3b-47a1-abda-e5d629181405",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        288,
+        376
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name",
+          "cachedResultName": "Leads"
+        },
+        "combineFilters": "AND",
+        "options": {}
+      },
+      "id": "15ce35f5-b329-4532-b43e-5c48004560c1",
+      "name": "Read Leads",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        512,
+        376
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "YOUR_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const NZT_OFFSET = 13; // NZDT (UTC+13); change to 12 after April 5 2026\n\nfunction toNZTDateStr(date) {\n  const nzt = new Date(date.getTime() + NZT_OFFSET * 3600000);\n  return nzt.toISOString().slice(0, 10);\n}\n\nfunction parseNZTStr(s) {\n  // \"2026-03-10 09:00\" stored as NZT \u2014 parse back to UTC\n  if (!s || s === 'PENDING') return null;\n  const cleaned = s.trim().replace(' ', 'T');\n  return new Date(cleaned + ':00+13:00');\n}\n\nfunction normalizePhone(phone) {\n  if (!phone) return null;\n  const c = phone.replace(/[\\s\\-\\(\\)]/g, '');\n  if (c.startsWith('0')) return '+64' + c.slice(1);\n  if (c.startsWith('+64')) return c;\n  return null;\n}\n\nconst MSG_INITIAL = \"Hi {name}, I help NZ agents auto-respond to Trade Me enquiries instantly \u2014 no missed leads when you're at an open home. Worth a chat? - Brandon\";\nconst MSG_F1 = \"Hey {name}, just following up. If you're not already sorted with automated lead follow-up, happy to show you what it looks like. - Brandon\";\nconst MSG_F2 = \"Last one from me {name} \u2014 if you'd like to see how it works, happy to send a short video or jump on a quick call. Otherwise no worries. - Brandon\";\n\nconst DAILY_CAP = 50;\nconst PER_RUN_CAP = 25;   // max new initial sends per run\nconst TOTAL_RUN_CAP = 25; // hard cap on total messages sent per run (initial + F1 + F2)\n\nconst now = new Date();\n\n// \u2500\u2500 Send window gate: Mon\u2013Fri 9:00am\u20134:30pm NZT only \u2500\u2500\nconst nztNow = new Date(now.getTime() + NZT_OFFSET * 3600000);\nconst nztHour = nztNow.getUTCHours();\nconst nztMinute = nztNow.getUTCMinutes();\nconst nztDay = nztNow.getUTCDay(); // 0=Sun, 1=Mon\u20265=Fri, 6=Sat\nconst isWeekday = nztDay >= 1 && nztDay <= 5;\nconst afterStart = nztHour >= 9;\nconst beforeEnd = nztHour < 16 || (nztHour === 16 && nztMinute <= 30);\nif (!isWeekday || !afterStart || !beforeEnd) return [];\n\nconst todayNZT = toNZTDateStr(now);\nconst rows = $input.all();\n\n// Count today's initial sends \u2014 includes PENDING rows (attempted sends count toward daily cap)\nlet todaySentCount = 0;\nfor (const item of rows) {\n  const g = (item.json['Initial Sent'] || '').trim();\n  if (!g) continue;\n  if (g === 'PENDING') {\n    // Count PENDING as today's attempt\n    todaySentCount++;\n    continue;\n  }\n  try {\n    const sentDate = toNZTDateStr(parseNZTStr(g));\n    if (sentDate === todayNZT) todaySentCount++;\n  } catch(e) {}\n}\n\nconst remaining = Math.max(0, DAILY_CAP - todaySentCount);\nconst initialCap = Math.min(remaining, PER_RUN_CAP);\n\nconst queue = [];\n\n// --- Initial sends ---\n// Eligible: Initial Sent is empty (not PENDING, not a timestamp)\nlet initialCount = 0;\nfor (const item of rows) {\n  if (initialCount >= initialCap) break;\n  const r = item.json;\n  const leadType = (r['Type'] || '').trim();\n  if (leadType === 'Commercial' || leadType === 'Property Management') continue;\n  const status = (r['Status'] || '').trim();\n  const g = (r['Initial Sent'] || '').trim();\n  if (g || status === 'Opted Out') continue; // skip if any value (incl. PENDING)\n  const mobile = (r['Mobile'] || '').trim();\n  const phone = normalizePhone(mobile);\n  if (!phone) continue;\n  const name = ((r['Name'] || '').split(' ')[0]) || 'there';\n  queue.push({\n    name, phone_e164: phone, original_mobile: mobile,\n    message: MSG_INITIAL.replace('{name}', name),\n    ts_col_name: 'Initial Sent', msg_col_name: 'Initial Message'\n  });\n  initialCount++;\n}\n\n// --- Followup 1 (3h+ after initial confirmed delivery) ---\n// Eligible: Initial Sent is a real timestamp (not PENDING), F1 Sent empty, no reply\nfor (const item of rows) {\n  const r = item.json;\n  const leadType = (r['Type'] || '').trim();\n  if (leadType === 'Commercial' || leadType === 'Property Management') continue;\n  const status = (r['Status'] || '').trim();\n  const g = (r['Initial Sent'] || '').trim();\n  const i = (r['F1 Sent'] || '').trim();\n  const replied = (r['Replied'] || '').trim();\n  if (!g || g === 'PENDING' || i || replied === 'Y' || status === 'Opted Out') continue;\n  const gTime = parseNZTStr(g);\n  if (!gTime) continue;\n  const hoursAgo = (now - gTime) / 3600000;\n  if (hoursAgo < 3) continue;\n  const mobile = (r['Mobile'] || '').trim();\n  const phone = normalizePhone(mobile);\n  if (!phone) continue;\n  const name = ((r['Name'] || '').split(' ')[0]) || 'there';\n  queue.push({\n    name, phone_e164: phone, original_mobile: mobile,\n    message: MSG_F1.replace('{name}', name),\n    ts_col_name: 'F1 Sent', msg_col_name: 'F1 Message'\n  });\n}\n\n// --- Followup 2 (21h+ after F1 confirmed delivery) ---\n// Eligible: F1 Sent is a real timestamp (not PENDING), F2 Sent empty, no reply\nfor (const item of rows) {\n  const r = item.json;\n  const leadType = (r['Type'] || '').trim();\n  if (leadType === 'Commercial' || leadType === 'Property Management') continue;\n  const status = (r['Status'] || '').trim();\n  const i = (r['F1 Sent'] || '').trim();\n  const k = (r['F2 Sent'] || '').trim();\n  const replied = (r['Replied'] || '').trim();\n  if (!i || i === 'PENDING' || k || replied === 'Y' || status === 'Opted Out') continue;\n  const iTime = parseNZTStr(i);\n  if (!iTime) continue;\n  const hoursAgo = (now - iTime) / 3600000;\n  if (hoursAgo < 21) continue;\n  const mobile = (r['Mobile'] || '').trim();\n  const phone = normalizePhone(mobile);\n  if (!phone) continue;\n  const name = ((r['Name'] || '').split(' ')[0]) || 'there';\n  queue.push({\n    name, phone_e164: phone, original_mobile: mobile,\n    message: MSG_F2.replace('{name}', name),\n    ts_col_name: 'F2 Sent', msg_col_name: 'F2 Message'\n  });\n}\n\nreturn queue.slice(0, TOTAL_RUN_CAP).map(item => ({ json: item }));"
+      },
+      "id": "c54908be-4107-48f4-81bf-33dc10cd0529",
+      "name": "Build Send Queue",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        736,
+        376
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "2c45a012-d840-4324-bc38-c2cbe274bc5a",
+      "name": "Split Each Lead",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        960,
+        376
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.textbee.dev/api/v1/gateway/devices/YOUR_TEXTBEE_DEVICE_ID/send-sms",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({\"recipients\": [$json.phone_e164], \"message\": $json.message}) }}",
+        "options": {},
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "id": "d27cf136-e00f-43a9-8115-26f884bc3af9",
+      "name": "Send SMS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1184,
+        304
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_TEXTBEE_HEADER_AUTH_CREDENTIAL_ID",
+          "name": "Textbee API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $('Split Each Lead').item.json;\nconst output = { Mobile: item.original_mobile };\noutput[item.ts_col_name] = 'PENDING';\noutput[item.msg_col_name] = item.message;\nreturn [{ json: output }];"
+      },
+      "id": "6f954933-0ea7-4595-9334-438d2a996807",
+      "name": "Prepare Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1408,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name",
+          "cachedResultName": "Leads"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "Mobile"
+          ],
+          "schema": [
+            {
+              "id": "Name",
+              "displayName": "Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Mobile",
+              "displayName": "Mobile",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Email",
+              "displayName": "Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Agency",
+              "displayName": "Agency",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "City",
+              "displayName": "City",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Date Scraped",
+              "displayName": "Date Scraped",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Type",
+              "displayName": "Type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Initial Sent",
+              "displayName": "Initial Sent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Initial Message",
+              "displayName": "Initial Message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "F1 Sent",
+              "displayName": "F1 Sent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "F1 Message",
+              "displayName": "F1 Message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "F2 Sent",
+              "displayName": "F2 Sent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "F2 Message",
+              "displayName": "F2 Message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Replied",
+              "displayName": "Replied",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Reply After",
+              "displayName": "Reply After",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Reply Received",
+              "displayName": "Reply Received",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Reply Text",
+              "displayName": "Reply Text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Outcome",
+              "displayName": "Outcome",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Notes",
+              "displayName": "Notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Lead_Replies",
+              "displayName": "Lead_Replies",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Brandon_Replies",
+              "displayName": "Brandon_Replies",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "2fa53d83-ec62-4245-8688-5e16e5f69c4f",
+      "name": "Update Sent Record",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        1632,
+        304
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "YOUR_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 60
+      },
+      "id": "1ea08349-33ca-4f5c-b516-d661e0074816",
+      "name": "Wait 60s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1856,
+        376
+      ],
+      "webhookId": "aaaaaaaa-0000-0000-0000-000000000001"
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Leads": {
+      "main": [
+        [
+          {
+            "node": "Build Send Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Send Queue": {
+      "main": [
+        [
+          {
+            "node": "Split Each Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Each Lead": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Send SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send SMS": {
+      "main": [
+        [
+          {
+            "node": "Prepare Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Update": {
+      "main": [
+        [
+          {
+            "node": "Update Sent Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Sent Record": {
+      "main": [
+        [
+          {
+            "node": "Wait 60s",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 60s": {
+      "main": [
+        [
+          {
+            "node": "Split Each Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "staticData": {
+    "node:Schedule Trigger": {
+      "recurrenceRules": []
+    }
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "pinData": {},
+  "versionId": "233fd239-5da8-42a6-8baf-49e9db9047c3",
+  "activeVersionId": "233fd239-5da8-42a6-8baf-49e9db9047c3",
+  "versionCounter": 85,
+  "triggerCount": 1,
+  "shared": [
+    {
+      "updatedAt": "2026-03-10T00:33:15.969Z",
+      "createdAt": "2026-03-10T00:33:15.969Z",
+      "role": "workflow:owner",
+      "workflowId": "YOUR_WF1_WORKFLOW_ID",
+      "projectId": "7SEyEnkrJFQZ387O",
+      "project": {
+        "updatedAt": "2026-03-09T23:25:14.299Z",
+        "createdAt": "2026-03-09T23:01:24.415Z",
+        "id": "7SEyEnkrJFQZ387O",
+        "name": "Your Name <your@email.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "bbc22449-1cc6-48f3-a48e-2171661c253f"
+      }
+    }
+  ],
+  "tags": [],
+  "activeVersion": {
+    "updatedAt": "2026-03-16T22:30:23.000Z",
+    "createdAt": "2026-03-16T22:29:55.382Z",
+    "versionId": "233fd239-5da8-42a6-8baf-49e9db9047c3",
+    "workflowId": "YOUR_WF1_WORKFLOW_ID",
+    "nodes": [
+      {
+        "parameters": {
+          "content": "## SMS Outreach (Outbound)\n\nRuns every 30 minutes, 9am\u20135pm NZT (NZDT).\n\n**What it does:**\n- Reads all leads from the Leads tab\n- Sends initial messages to new leads (cap: 25/run, 50/day)\n- Sends Followup 1 to leads where initial was delivered 3h+ ago, no reply\n- Sends Followup 2 to leads where F1 was delivered 21h+ ago, no reply\n- Writes PENDING to the timestamp column immediately after each send\n- Workflow 2 overwrites PENDING with confirmed timestamp on delivery, or clears it on failure\n- Waits 60s between each SMS to avoid rate limits\n\n**Why it exists:**\nAutomates the cold outreach cadence so the Mac doesn't need to stay on.",
+          "height": 340,
+          "width": 460,
+          "color": 4
+        },
+        "id": "bb41f252-1d1d-434b-9780-9bf2e126e6be",
+        "name": "Workflow Description",
+        "type": "n8n-nodes-base.stickyNote",
+        "typeVersion": 1,
+        "position": [
+          -208,
+          64
+        ]
+      },
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "cronExpression",
+                "expression": "0,30 20-23 * * *"
+              },
+              {
+                "field": "cronExpression",
+                "expression": "0,30 0-3 * * *"
+              }
+            ]
+          }
+        },
+        "id": "d03b1b94-ce3b-47a1-abda-e5d629181405",
+        "name": "Schedule Trigger",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.2,
+        "position": [
+          288,
+          376
+        ]
+      },
+      {
+        "parameters": {
+          "documentId": {
+            "__rl": true,
+            "value": "YOUR_SPREADSHEET_ID",
+            "mode": "id"
+          },
+          "sheetName": {
+            "__rl": true,
+            "value": "Leads",
+            "mode": "name",
+            "cachedResultName": "Leads"
+          },
+          "combineFilters": "AND",
+          "options": {}
+        },
+        "id": "15ce35f5-b329-4532-b43e-5c48004560c1",
+        "name": "Read Leads",
+        "type": "n8n-nodes-base.googleSheets",
+        "typeVersion": 4,
+        "position": [
+          512,
+          376
+        ],
+        "credentials": {
+          "googleSheetsOAuth2Api": {
+            "id": "YOUR_GOOGLE_SHEETS_CREDENTIAL_ID",
+            "name": "Google Sheets account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "jsCode": "const NZT_OFFSET = 13; // NZDT (UTC+13); change to 12 after April 5 2026\n\nfunction toNZTDateStr(date) {\n  const nzt = new Date(date.getTime() + NZT_OFFSET * 3600000);\n  return nzt.toISOString().slice(0, 10);\n}\n\nfunction parseNZTStr(s) {\n  // \"2026-03-10 09:00\" stored as NZT \u2014 parse back to UTC\n  if (!s || s === 'PENDING') return null;\n  const cleaned = s.trim().replace(' ', 'T');\n  return new Date(cleaned + ':00+13:00');\n}\n\nfunction normalizePhone(phone) {\n  if (!phone) return null;\n  const c = phone.replace(/[\\s\\-\\(\\)]/g, '');\n  if (c.startsWith('0')) return '+64' + c.slice(1);\n  if (c.startsWith('+64')) return c;\n  return null;\n}\n\nconst MSG_INITIAL = \"Hi {name}, I help NZ agents auto-respond to Trade Me enquiries instantly \u2014 no missed leads when you're at an open home. Worth a chat? - Brandon\";\nconst MSG_F1 = \"Hey {name}, just following up. If you're not already sorted with automated lead follow-up, happy to show you what it looks like. - Brandon\";\nconst MSG_F2 = \"Last one from me {name} \u2014 if you'd like to see how it works, happy to send a short video or jump on a quick call. Otherwise no worries. - Brandon\";\n\nconst DAILY_CAP = 50;\nconst PER_RUN_CAP = 25;   // max new initial sends per run\nconst TOTAL_RUN_CAP = 25; // hard cap on total messages sent per run (initial + F1 + F2)\n\nconst now = new Date();\n\n// \u2500\u2500 Send window gate: Mon\u2013Fri 9:00am\u20134:30pm NZT only \u2500\u2500\nconst nztNow = new Date(now.getTime() + NZT_OFFSET * 3600000);\nconst nztHour = nztNow.getUTCHours();\nconst nztMinute = nztNow.getUTCMinutes();\nconst nztDay = nztNow.getUTCDay(); // 0=Sun, 1=Mon\u20265=Fri, 6=Sat\nconst isWeekday = nztDay >= 1 && nztDay <= 5;\nconst afterStart = nztHour >= 9;\nconst beforeEnd = nztHour < 16 || (nztHour === 16 && nztMinute <= 30);\nif (!isWeekday || !afterStart || !beforeEnd) return [];\n\nconst todayNZT = toNZTDateStr(now);\nconst rows = $input.all();\n\n// Count today's initial sends \u2014 includes PENDING rows (attempted sends count toward daily cap)\nlet todaySentCount = 0;\nfor (const item of rows) {\n  const g = (item.json['Initial Sent'] || '').trim();\n  if (!g) continue;\n  if (g === 'PENDING') {\n    // Count PENDING as today's attempt\n    todaySentCount++;\n    continue;\n  }\n  try {\n    const sentDate = toNZTDateStr(parseNZTStr(g));\n    if (sentDate === todayNZT) todaySentCount++;\n  } catch(e) {}\n}\n\nconst remaining = Math.max(0, DAILY_CAP - todaySentCount);\nconst initialCap = Math.min(remaining, PER_RUN_CAP);\n\nconst queue = [];\n\n// --- Initial sends ---\n// Eligible: Initial Sent is empty (not PENDING, not a timestamp)\nlet initialCount = 0;\nfor (const item of rows) {\n  if (initialCount >= initialCap) break;\n  const r = item.json;\n  const leadType = (r['Type'] || '').trim();\n  if (leadType === 'Commercial' || leadType === 'Property Management') continue;\n  const status = (r['Status'] || '').trim();\n  const g = (r['Initial Sent'] || '').trim();\n  if (g || status === 'Opted Out') continue; // skip if any value (incl. PENDING)\n  const mobile = (r['Mobile'] || '').trim();\n  const phone = normalizePhone(mobile);\n  if (!phone) continue;\n  const name = ((r['Name'] || '').split(' ')[0]) || 'there';\n  queue.push({\n    name, phone_e164: phone, original_mobile: mobile,\n    message: MSG_INITIAL.replace('{name}', name),\n    ts_col_name: 'Initial Sent', msg_col_name: 'Initial Message'\n  });\n  initialCount++;\n}\n\n// --- Followup 1 (3h+ after initial confirmed delivery) ---\n// Eligible: Initial Sent is a real timestamp (not PENDING), F1 Sent empty, no reply\nfor (const item of rows) {\n  const r = item.json;\n  const leadType = (r['Type'] || '').trim();\n  if (leadType === 'Commercial' || leadType === 'Property Management') continue;\n  const status = (r['Status'] || '').trim();\n  const g = (r['Initial Sent'] || '').trim();\n  const i = (r['F1 Sent'] || '').trim();\n  const replied = (r['Replied'] || '').trim();\n  if (!g || g === 'PENDING' || i || replied === 'Y' || status === 'Opted Out') continue;\n  const gTime = parseNZTStr(g);\n  if (!gTime) continue;\n  const hoursAgo = (now - gTime) / 3600000;\n  if (hoursAgo < 3) continue;\n  const mobile = (r['Mobile'] || '').trim();\n  const phone = normalizePhone(mobile);\n  if (!phone) continue;\n  const name = ((r['Name'] || '').split(' ')[0]) || 'there';\n  queue.push({\n    name, phone_e164: phone, original_mobile: mobile,\n    message: MSG_F1.replace('{name}', name),\n    ts_col_name: 'F1 Sent', msg_col_name: 'F1 Message'\n  });\n}\n\n// --- Followup 2 (21h+ after F1 confirmed delivery) ---\n// Eligible: F1 Sent is a real timestamp (not PENDING), F2 Sent empty, no reply\nfor (const item of rows) {\n  const r = item.json;\n  const leadType = (r['Type'] || '').trim();\n  if (leadType === 'Commercial' || leadType === 'Property Management') continue;\n  const status = (r['Status'] || '').trim();\n  const i = (r['F1 Sent'] || '').trim();\n  const k = (r['F2 Sent'] || '').trim();\n  const replied = (r['Replied'] || '').trim();\n  if (!i || i === 'PENDING' || k || replied === 'Y' || status === 'Opted Out') continue;\n  const iTime = parseNZTStr(i);\n  if (!iTime) continue;\n  const hoursAgo = (now - iTime) / 3600000;\n  if (hoursAgo < 21) continue;\n  const mobile = (r['Mobile'] || '').trim();\n  const phone = normalizePhone(mobile);\n  if (!phone) continue;\n  const name = ((r['Name'] || '').split(' ')[0]) || 'there';\n  queue.push({\n    name, phone_e164: phone, original_mobile: mobile,\n    message: MSG_F2.replace('{name}', name),\n    ts_col_name: 'F2 Sent', msg_col_name: 'F2 Message'\n  });\n}\n\nreturn queue.slice(0, TOTAL_RUN_CAP).map(item => ({ json: item }));"
+        },
+        "id": "c54908be-4107-48f4-81bf-33dc10cd0529",
+        "name": "Build Send Queue",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          736,
+          376
+        ]
+      },
+      {
+        "parameters": {
+          "options": {}
+        },
+        "id": "2c45a012-d840-4324-bc38-c2cbe274bc5a",
+        "name": "Split Each Lead",
+        "type": "n8n-nodes-base.splitInBatches",
+        "typeVersion": 3,
+        "position": [
+          960,
+          376
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://api.textbee.dev/api/v1/gateway/devices/YOUR_TEXTBEE_DEVICE_ID/send-sms",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "x-api-key",
+                "value": "={{ $vars.TEXTBEE_API_KEY }}"
+              }
+            ]
+          },
+          "sendBody": true,
+          "contentType": "raw",
+          "rawContentType": "application/json",
+          "body": "={{ JSON.stringify({\"recipients\": [$json.phone_e164], \"message\": $json.message}) }}",
+          "options": {}
+        },
+        "id": "d27cf136-e00f-43a9-8115-26f884bc3af9",
+        "name": "Send SMS",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.1,
+        "position": [
+          1184,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const item = $('Split Each Lead').item.json;\nconst output = { Mobile: item.original_mobile };\noutput[item.ts_col_name] = 'PENDING';\noutput[item.msg_col_name] = item.message;\nreturn [{ json: output }];"
+        },
+        "id": "6f954933-0ea7-4595-9334-438d2a996807",
+        "name": "Prepare Update",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1408,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "operation": "update",
+          "documentId": {
+            "__rl": true,
+            "value": "YOUR_SPREADSHEET_ID",
+            "mode": "id"
+          },
+          "sheetName": {
+            "__rl": true,
+            "value": "Leads",
+            "mode": "name",
+            "cachedResultName": "Leads"
+          },
+          "columns": {
+            "mappingMode": "autoMapInputData",
+            "value": {},
+            "matchingColumns": [
+              "Mobile"
+            ],
+            "schema": [
+              {
+                "id": "Name",
+                "displayName": "Name",
+                "required": false,
+                "defaultMatch": false,
+                "display": true,
+                "type": "string",
+                "canBeUsedToMatch": true,
+                "removed": false
+              },
+              {
+                "id": "Mobile",
+                "displayName": "Mobile",
+                "required": false,
+                "defaultMatch": false,
+                "display": true,
+                "type": "string",
+                "canBeUsedToMatch": true,
+                "removed": false
+              },
+              {
+                "id": "Email",
+                "displayName": "Email",
+                "required": false,
+                "defaultMatch": false,
+                "display": true,
+                "type": "string",
+                "canBeUsedToMatch": true,
+                "removed": false
+              },
+              {
+                "id": "Agency",
+                "displayName": "Agency",
+                "required": false,
+                "defaultMatch": false,
+                "display": true,
+                "type": "string",
+                "canBeUsedToMatch": true,
+                "removed": false
+              },
+              {
+                "id": "City",
+                "displayName": "City",
+                "required": false,
+                "defaultMatch": false,
+                "display": true,
+                "type": "string",
+                "canBeUsedToMatch": true,
+                "removed": false
+              },
+              {
+                "id": "Date Scraped",
+                "displayName": "Date Scraped",
+                "required": false,
+                "defaultMatch": false,
+                "display": true,
+                "type": "string",
+                "canBeUsedToMatch": true,
+                "removed": false
+              },
+              {
+                "id": "Type",
+                "displayName": "Type",
+                "required": false,
+                "defaultMatch": false,
+                "display": true,
+                "type": "string",
+                "canBeUsedToMatch": true,
+                "removed": false
+              },
+              {
+                "id": "Initial Sent",
+                "displayName": "Initial Sent",
+                "required": false,
+                "defaultMatch": false,
+                "display": true,
+                "type": "string",
+                "canBeUsedToMatch": true,
+                "removed": false
+              },
+              {
+                "id": "Initial Message",
+                "displayName": "Initial Message",
+                "required": false,
+                "defaultMatch": false,
+                "display": true,
+                "type": "string",
+                "canBeUsedToMatch": true,
+                "removed": false
+              },
+              {
+                "id": "F1 Sent",
+                "displayName": "F1 Sent",
+                "required": false,
+                "defaultMatch": false,
+                "display": true,
+                "type": "string",
+                "canBeUsedToMatch": true,
+                "removed": false
+              },
+              {
+                "id": "F1 Message",
+                "displayName": "F1 Message",
+                "required": false,
+                "defaultMatch": false,
+                "display": true,
+                "type": "string",
+                "canBeUsedToMatch": true,
+                "removed": false
+              },
+              {
+                "id": "F2 Sent",
+                "displayName": "F2 Sent",
+                "required": false,
+                "defaultMatch": false,
+                "display": true,
+                "type": "string",
+                "canBeUsedToMatch": true,
+                "removed": false
+              },
+              {
+                "id": "F2 Message",
+                "displayName": "F2 Message",
+                "required": false,
+                "defaultMatch": false,
+                "display": true,
+                "type": "string",
+                "canBeUsedToMatch": true,
+                "removed": false
+              },
+              {
+                "id": "Replied",
+                "displayName": "Replied",
+                "required": false,
+                "defaultMatch": false,
+                "display": true,
+                "type": "string",
+                "canBeUsedToMatch": true,
+                "removed": false
+              },
+              {
+                "id": "Reply After",
+                "displayName": "Reply After",
+                "required": false,
+                "defaultMatch": false,
+                "display": true,
+                "type": "string",
+                "canBeUsedToMatch": true,
+                "removed": false
+              },
+              {
+                "id": "Reply Received",
+                "displayName": "Reply Received",
+                "required": false,
+                "defaultMatch": false,
+                "display": true,
+                "type": "string",
+                "canBeUsedToMatch": true,
+                "removed": false
+              },
+              {
+                "id": "Reply Text",
+                "displayName": "Reply Text",
+                "required": false,
+                "defaultMatch": false,
+                "display": true,
+                "type": "string",
+                "canBeUsedToMatch": true,
+                "removed": false
+              },
+              {
+                "id": "Outcome",
+                "displayName": "Outcome",
+                "required": false,
+                "defaultMatch": false,
+                "display": true,
+                "type": "string",
+                "canBeUsedToMatch": true,
+                "removed": false
+              },
+              {
+                "id": "Notes",
+                "displayName": "Notes",
+                "required": false,
+                "defaultMatch": false,
+                "display": true,
+                "type": "string",
+                "canBeUsedToMatch": true,
+                "removed": false
+              },
+              {
+                "id": "Status",
+                "displayName": "Status",
+                "required": false,
+                "defaultMatch": false,
+                "display": true,
+                "type": "string",
+                "canBeUsedToMatch": true,
+                "removed": false
+              },
+              {
+                "id": "Lead_Replies",
+                "displayName": "Lead_Replies",
+                "required": false,
+                "defaultMatch": false,
+                "display": true,
+                "type": "string",
+                "canBeUsedToMatch": true,
+                "removed": false
+              },
+              {
+                "id": "Brandon_Replies",
+                "displayName": "Brandon_Replies",
+                "required": false,
+                "defaultMatch": false,
+                "display": true,
+                "type": "string",
+                "canBeUsedToMatch": true,
+                "removed": false
+              },
+              {
+                "id": "row_number",
+                "displayName": "row_number",
+                "required": false,
+                "defaultMatch": false,
+                "display": true,
+                "type": "number",
+                "canBeUsedToMatch": true,
+                "readOnly": true,
+                "removed": false
+              }
+            ],
+            "attemptToConvertTypes": false,
+            "convertFieldsToString": false
+          },
+          "options": {}
+        },
+        "id": "2fa53d83-ec62-4245-8688-5e16e5f69c4f",
+        "name": "Update Sent Record",
+        "type": "n8n-nodes-base.googleSheets",
+        "typeVersion": 4,
+        "position": [
+          1632,
+          304
+        ],
+        "credentials": {
+          "googleSheetsOAuth2Api": {
+            "id": "YOUR_GOOGLE_SHEETS_CREDENTIAL_ID",
+            "name": "Google Sheets account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "amount": 60
+        },
+        "id": "1ea08349-33ca-4f5c-b516-d661e0074816",
+        "name": "Wait 60s",
+        "type": "n8n-nodes-base.wait",
+        "typeVersion": 1.1,
+        "position": [
+          1856,
+          376
+        ],
+        "webhookId": "aaaaaaaa-0000-0000-0000-000000000001"
+      }
+    ],
+    "connections": {
+      "Schedule Trigger": {
+        "main": [
+          [
+            {
+              "node": "Read Leads",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Read Leads": {
+        "main": [
+          [
+            {
+              "node": "Build Send Queue",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build Send Queue": {
+        "main": [
+          [
+            {
+              "node": "Split Each Lead",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Split Each Lead": {
+        "main": [
+          [],
+          [
+            {
+              "node": "Send SMS",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Send SMS": {
+        "main": [
+          [
+            {
+              "node": "Prepare Update",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Prepare Update": {
+        "main": [
+          [
+            {
+              "node": "Update Sent Record",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Update Sent Record": {
+        "main": [
+          [
+            {
+              "node": "Wait 60s",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Wait 60s": {
+        "main": [
+          [
+            {
+              "node": "Split Each Lead",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "authors": "Your Name",
+    "name": "Version 233fd239",
+    "description": "",
+    "autosaved": false,
+    "workflowPublishHistory": [
+      {
+        "createdAt": "2026-03-16T22:30:23.860Z",
+        "id": 79,
+        "workflowId": "YOUR_WF1_WORKFLOW_ID",
+        "versionId": "233fd239-5da8-42a6-8baf-49e9db9047c3",
+        "event": "activated",
+        "userId": "bbc22449-1cc6-48f3-a48e-2171661c253f"
+      }
+    ]
+  }
+}
