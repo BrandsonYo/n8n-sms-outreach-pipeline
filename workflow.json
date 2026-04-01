@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-03-16T22:29:55.381Z",
+  "updatedAt": "2026-04-01T00:49:17.896Z",
   "createdAt": "2026-03-10T00:33:15.967Z",
   "id": "YOUR_WF1_WORKFLOW_ID",
   "name": "SMS Outreach (Outbound)",
@@ -14,7 +14,7 @@
         "width": 460,
         "color": 4
       },
-      "id": "bb41f252-1d1d-434b-9780-9bf2e126e6be",
+      "id": "45172858-abfc-4f9a-b4ec-dbdecd21ac02",
       "name": "Workflow Description",
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
@@ -33,12 +33,12 @@
             },
             {
               "field": "cronExpression",
-              "expression": "0,30 0-3 * * *"
+              "expression": "0,30 0-4 * * *"
             }
           ]
         }
       },
-      "id": "d03b1b94-ce3b-47a1-abda-e5d629181405",
+      "id": "2e5a0949-7d63-456d-ae9a-0869634b6559",
       "name": "Schedule Trigger",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
@@ -63,7 +63,7 @@
         "combineFilters": "AND",
         "options": {}
       },
-      "id": "15ce35f5-b329-4532-b43e-5c48004560c1",
+      "id": "9b04c93a-215e-49cd-a2f5-c50a2864777c",
       "name": "Read Leads",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4,
@@ -80,9 +80,9 @@
     },
     {
       "parameters": {
-        "jsCode": "const NZT_OFFSET = 13; // NZDT (UTC+13); change to 12 after April 5 2026\n\nfunction toNZTDateStr(date) {\n  const nzt = new Date(date.getTime() + NZT_OFFSET * 3600000);\n  return nzt.toISOString().slice(0, 10);\n}\n\nfunction parseNZTStr(s) {\n  // \"2026-03-10 09:00\" stored as NZT \u2014 parse back to UTC\n  if (!s || s === 'PENDING') return null;\n  const cleaned = s.trim().replace(' ', 'T');\n  return new Date(cleaned + ':00+13:00');\n}\n\nfunction normalizePhone(phone) {\n  if (!phone) return null;\n  const c = phone.replace(/[\\s\\-\\(\\)]/g, '');\n  if (c.startsWith('0')) return '+64' + c.slice(1);\n  if (c.startsWith('+64')) return c;\n  return null;\n}\n\nconst MSG_INITIAL = \"Hi {name}, I help NZ agents auto-respond to Trade Me enquiries instantly \u2014 no missed leads when you're at an open home. Worth a chat? - Brandon\";\nconst MSG_F1 = \"Hey {name}, just following up. If you're not already sorted with automated lead follow-up, happy to show you what it looks like. - Brandon\";\nconst MSG_F2 = \"Last one from me {name} \u2014 if you'd like to see how it works, happy to send a short video or jump on a quick call. Otherwise no worries. - Brandon\";\n\nconst DAILY_CAP = 50;\nconst PER_RUN_CAP = 25;   // max new initial sends per run\nconst TOTAL_RUN_CAP = 25; // hard cap on total messages sent per run (initial + F1 + F2)\n\nconst now = new Date();\n\n// \u2500\u2500 Send window gate: Mon\u2013Fri 9:00am\u20134:30pm NZT only \u2500\u2500\nconst nztNow = new Date(now.getTime() + NZT_OFFSET * 3600000);\nconst nztHour = nztNow.getUTCHours();\nconst nztMinute = nztNow.getUTCMinutes();\nconst nztDay = nztNow.getUTCDay(); // 0=Sun, 1=Mon\u20265=Fri, 6=Sat\nconst isWeekday = nztDay >= 1 && nztDay <= 5;\nconst afterStart = nztHour >= 9;\nconst beforeEnd = nztHour < 16 || (nztHour === 16 && nztMinute <= 30);\nif (!isWeekday || !afterStart || !beforeEnd) return [];\n\nconst todayNZT = toNZTDateStr(now);\nconst rows = $input.all();\n\n// Count today's initial sends \u2014 includes PENDING rows (attempted sends count toward daily cap)\nlet todaySentCount = 0;\nfor (const item of rows) {\n  const g = (item.json['Initial Sent'] || '').trim();\n  if (!g) continue;\n  if (g === 'PENDING') {\n    // Count PENDING as today's attempt\n    todaySentCount++;\n    continue;\n  }\n  try {\n    const sentDate = toNZTDateStr(parseNZTStr(g));\n    if (sentDate === todayNZT) todaySentCount++;\n  } catch(e) {}\n}\n\nconst remaining = Math.max(0, DAILY_CAP - todaySentCount);\nconst initialCap = Math.min(remaining, PER_RUN_CAP);\n\nconst queue = [];\n\n// --- Initial sends ---\n// Eligible: Initial Sent is empty (not PENDING, not a timestamp)\nlet initialCount = 0;\nfor (const item of rows) {\n  if (initialCount >= initialCap) break;\n  const r = item.json;\n  const leadType = (r['Type'] || '').trim();\n  if (leadType === 'Commercial' || leadType === 'Property Management') continue;\n  const status = (r['Status'] || '').trim();\n  const g = (r['Initial Sent'] || '').trim();\n  if (g || status === 'Opted Out') continue; // skip if any value (incl. PENDING)\n  const mobile = (r['Mobile'] || '').trim();\n  const phone = normalizePhone(mobile);\n  if (!phone) continue;\n  const name = ((r['Name'] || '').split(' ')[0]) || 'there';\n  queue.push({\n    name, phone_e164: phone, original_mobile: mobile,\n    message: MSG_INITIAL.replace('{name}', name),\n    ts_col_name: 'Initial Sent', msg_col_name: 'Initial Message'\n  });\n  initialCount++;\n}\n\n// --- Followup 1 (3h+ after initial confirmed delivery) ---\n// Eligible: Initial Sent is a real timestamp (not PENDING), F1 Sent empty, no reply\nfor (const item of rows) {\n  const r = item.json;\n  const leadType = (r['Type'] || '').trim();\n  if (leadType === 'Commercial' || leadType === 'Property Management') continue;\n  const status = (r['Status'] || '').trim();\n  const g = (r['Initial Sent'] || '').trim();\n  const i = (r['F1 Sent'] || '').trim();\n  const replied = (r['Replied'] || '').trim();\n  if (!g || g === 'PENDING' || i || replied === 'Y' || status === 'Opted Out') continue;\n  const gTime = parseNZTStr(g);\n  if (!gTime) continue;\n  const hoursAgo = (now - gTime) / 3600000;\n  if (hoursAgo < 3) continue;\n  const mobile = (r['Mobile'] || '').trim();\n  const phone = normalizePhone(mobile);\n  if (!phone) continue;\n  const name = ((r['Name'] || '').split(' ')[0]) || 'there';\n  queue.push({\n    name, phone_e164: phone, original_mobile: mobile,\n    message: MSG_F1.replace('{name}', name),\n    ts_col_name: 'F1 Sent', msg_col_name: 'F1 Message'\n  });\n}\n\n// --- Followup 2 (21h+ after F1 confirmed delivery) ---\n// Eligible: F1 Sent is a real timestamp (not PENDING), F2 Sent empty, no reply\nfor (const item of rows) {\n  const r = item.json;\n  const leadType = (r['Type'] || '').trim();\n  if (leadType === 'Commercial' || leadType === 'Property Management') continue;\n  const status = (r['Status'] || '').trim();\n  const i = (r['F1 Sent'] || '').trim();\n  const k = (r['F2 Sent'] || '').trim();\n  const replied = (r['Replied'] || '').trim();\n  if (!i || i === 'PENDING' || k || replied === 'Y' || status === 'Opted Out') continue;\n  const iTime = parseNZTStr(i);\n  if (!iTime) continue;\n  const hoursAgo = (now - iTime) / 3600000;\n  if (hoursAgo < 21) continue;\n  const mobile = (r['Mobile'] || '').trim();\n  const phone = normalizePhone(mobile);\n  if (!phone) continue;\n  const name = ((r['Name'] || '').split(' ')[0]) || 'there';\n  queue.push({\n    name, phone_e164: phone, original_mobile: mobile,\n    message: MSG_F2.replace('{name}', name),\n    ts_col_name: 'F2 Sent', msg_col_name: 'F2 Message'\n  });\n}\n\nreturn queue.slice(0, TOTAL_RUN_CAP).map(item => ({ json: item }));"
+        "jsCode": "const NZT_OFFSET = 13; // NZDT (UTC+13); change to 12 after April 5 2026\n\nfunction toNZTDateStr(date) {\n  const nzt = new Date(date.getTime() + NZT_OFFSET * 3600000);\n  return nzt.toISOString().slice(0, 10);\n}\n\nfunction parseNZTStr(s) {\n  // \"2026-03-10 09:00\" stored as NZT \u2014 parse back to UTC\n  if (!s || s === 'PENDING') return null;\n  const cleaned = s.trim().replace(' ', 'T');\n  return new Date(cleaned + ':00+13:00');\n}\n\nfunction normalizePhone(phone) {\n  if (!phone) return null;\n  const c = phone.replace(/[\\s\\-\\(\\)]/g, '');\n  if (c.startsWith('0')) return '+64' + c.slice(1);\n  if (c.startsWith('+64')) return c;\n  return null;\n}\n\nconst MESSAGE_TEMPLATES = {\n  'Residential': {\n    A: {\n      initial: \"Hi {name}, I help NZ agents auto-respond to Trade Me enquiries instantly, no missed leads when you're at an open home. Happy to set it up for free. Worth a chat? Brandon\",\n      f1: \"Hey {name}, just following up. If you're not already sorted with automated lead follow-up, happy to show you what it looks like. Brandon\",\n      f2: \"Last one from me {name}. Happy to jump on a 10-min call to walk you through it. Otherwise no worries. Brandon\"\n    },\n    B: {\n      initial: \"Hi {name}, quick one, how do you handle Trade Me enquiries when you're at an open home? Building something for NZ agents and curious. Brandon\",\n      f1: \"Hey {name}, following up on my question. Even a quick reply helps, genuinely curious how you're handling it. Brandon\",\n      f2: \"Last one from me {name}. Happy to jump on a 10-min call to walk you through it. Otherwise no worries. Brandon\"\n    }\n  },\n  'Development': {\n    A: {\n      initial: \"Hi {name}, I help NZ development teams handle the enquiry flood at launch so no EOI gets dropped or left waiting. Happy to show you what it looks like. Worth a chat? Brandon\",\n      f1: \"Hey {name}, following up. If your next project launch means juggling buyer enquiries across the team, I can make that a lot smoother. Brandon\",\n      f2: \"Last one from me {name}. Happy to jump on a 10-min call to walk you through it. Otherwise no worries. Brandon\"\n    },\n    B: {\n      initial: \"Hi {name}, quick one, how do you keep track of buyer enquiries across a project launch? Building something for NZ development teams. Curious. Brandon\",\n      f1: \"Hey {name}, following up on my question. Happy to share what I'm building if you're curious. Brandon\",\n      f2: \"Last one from me {name}. Happy to jump on a 10-min call to walk you through it. Otherwise no worries. Brandon\"\n    }\n  },\n  'Commercial': {\n    A: {\n      initial: \"Hi {name}, I help NZ commercial agents respond to serious enquiries faster so deals don't go cold while you're out with another client. Worth a chat? Brandon\",\n      f1: \"Hey {name}, following up. If enquiry response time is ever a bottleneck, I've got something that could help. Happy to show you what it looks like. Brandon\",\n      f2: \"Last one from me {name}. Happy to jump on a 10-min call to walk you through it. Otherwise no worries. Brandon\"\n    },\n    B: {\n      initial: \"Hi {name}, quick one, how do you handle enquiries that come in while you're out with another client? Building something for NZ commercial agents. Curious. Brandon\",\n      f1: \"Hey {name}, following up on my question. Happy to share what I'm building if you've got 2 mins. Brandon\",\n      f2: \"Last one from me {name}. Happy to jump on a 10-min call to walk you through it. Otherwise no worries. Brandon\"\n    }\n  },\n  'Property Management': {\n    A: {\n      initial: \"Hi {name}, I help NZ property managers cut hours off routine tenant and landlord comms like maintenance updates, rent reminders, that kind of thing. Happy to show you what it looks like. Worth a chat? Brandon\",\n      f1: \"Hey {name}, following up. If your team spends a lot of time on routine tenant messages, I've built something that handles it for you. Happy to show you what it looks like. Brandon\",\n      f2: \"Last one from me {name}. Happy to jump on a 10-min call to walk you through it. Otherwise no worries. Brandon\"\n    },\n    B: {\n      initial: \"Hi {name}, quick one, how much time does your team spend on routine tenant comms each week? Building something for NZ property managers. Curious. Brandon\",\n      f1: \"Hey {name}, following up on my question. Happy to share what I'm building for PM businesses. Brandon\",\n      f2: \"Last one from me {name}. Happy to jump on a 10-min call to walk you through it. Otherwise no worries. Brandon\"\n    }\n  }\n};\n\nconst DAILY_CAP = 50;\nconst PER_RUN_CAP = 25;   // max new initial sends per run\nconst TOTAL_RUN_CAP = 25; // hard cap on total messages sent per run (initial + F1 + F2)\n\nconst now = new Date();\n\n// \u2500\u2500 Send window gate: Mon\u2013Fri 9:00am\u20134:30pm NZT only \u2500\u2500\nconst nztNow = new Date(now.getTime() + NZT_OFFSET * 3600000);\nconst nztHour = nztNow.getUTCHours();\nconst nztMinute = nztNow.getUTCMinutes();\nconst nztDay = nztNow.getUTCDay(); // 0=Sun, 1=Mon\u20265=Fri, 6=Sat\nconst isWeekday = nztDay >= 1 && nztDay <= 5;\nconst afterStart = nztHour >= 9;\nconst beforeEnd = nztHour < 16 || (nztHour === 16 && nztMinute <= 30);\nif (!isWeekday || !afterStart || !beforeEnd) return [];\n\nconst todayNZT = toNZTDateStr(now);\nconst rows = $input.all();\n\n// Count today's initial sends \u2014 includes PENDING rows (attempted sends count toward daily cap)\nlet todaySentCount = 0;\nfor (const item of rows) {\n  const g = (item.json['Initial Sent'] || '').trim();\n  if (!g) continue;\n  if (g === 'PENDING') {\n    // Count PENDING as today's attempt\n    todaySentCount++;\n    continue;\n  }\n  try {\n    const sentDate = toNZTDateStr(parseNZTStr(g));\n    if (sentDate === todayNZT) todaySentCount++;\n  } catch(e) {}\n}\n\nconst remaining = Math.max(0, DAILY_CAP - todaySentCount);\nconst initialCap = Math.min(remaining, PER_RUN_CAP);\n\nconst queue = [];\n\n// --- Initial sends ---\n// Eligible: Initial Sent is empty (not PENDING, not a timestamp)\nlet initialCount = 0;\nfor (const item of rows) {\n  if (initialCount >= initialCap) break;\n  const r = item.json;\n  const leadType = (r['Type'] || '').trim();\n  if (!MESSAGE_TEMPLATES[leadType]) continue;\n  const status = (r['Status'] || '').trim();\n  const g = (r['Initial Sent'] || '').trim();\n  if (g || status === 'Opted Out') continue; // skip if any value (incl. PENDING)\n  const mobile = (r['Mobile'] || '').trim();\n  const phone = normalizePhone(mobile);\n  if (!phone) continue;\n  const name = ((r['Name'] || '').split(' ')[0]) || 'there';\n  const variant = Math.random() < 0.7 ? 'A' : 'B';\n  const templates = MESSAGE_TEMPLATES[leadType][variant];\n  queue.push({\n    name, phone_e164: phone, original_mobile: mobile,\n    message: templates.initial.replace('{name}', name),\n    ts_col_name: 'Initial Sent', msg_col_name: 'Initial Message',\n    variant\n  });\n  initialCount++;\n}\n\n// --- Followup 1 (3h+ after initial confirmed delivery) ---\n// Eligible: Initial Sent is a real timestamp (not PENDING), F1 Sent empty, no reply\nfor (const item of rows) {\n  const r = item.json;\n  const leadType = (r['Type'] || '').trim();\n  if (!MESSAGE_TEMPLATES[leadType]) continue;\n  const status = (r['Status'] || '').trim();\n  const g = (r['Initial Sent'] || '').trim();\n  const i = (r['F1 Sent'] || '').trim();\n  const replied = (r['Replied'] || '').trim();\n  if (!g || g === 'PENDING' || i || replied === 'TRUE' || status === 'Opted Out') continue;\n  const gTime = parseNZTStr(g);\n  if (!gTime) continue;\n  const hoursAgo = (now - gTime) / 3600000;\n  if (hoursAgo < 3) continue;\n  const mobile = (r['Mobile'] || '').trim();\n  const phone = normalizePhone(mobile);\n  if (!phone) continue;\n  const name = ((r['Name'] || '').split(' ')[0]) || 'there';\n  const variant = (r['Variant'] || 'A').trim();\n  const templates = MESSAGE_TEMPLATES[leadType][variant] || MESSAGE_TEMPLATES[leadType]['A'];\n  queue.push({\n    name, phone_e164: phone, original_mobile: mobile,\n    message: templates.f1.replace('{name}', name),\n    ts_col_name: 'F1 Sent', msg_col_name: 'F1 Message'\n  });\n}\n\n// --- Followup 2 (21h+ after F1 confirmed delivery) ---\n// Eligible: F1 Sent is a real timestamp (not PENDING), F2 Sent empty, no reply\nfor (const item of rows) {\n  const r = item.json;\n  const leadType = (r['Type'] || '').trim();\n  if (!MESSAGE_TEMPLATES[leadType]) continue;\n  const status = (r['Status'] || '').trim();\n  const i = (r['F1 Sent'] || '').trim();\n  const k = (r['F2 Sent'] || '').trim();\n  const replied = (r['Replied'] || '').trim();\n  if (!i || i === 'PENDING' || k || replied === 'TRUE' || status === 'Opted Out') continue;\n  const iTime = parseNZTStr(i);\n  if (!iTime) continue;\n  const hoursAgo = (now - iTime) / 3600000;\n  if (hoursAgo < 21) continue;\n  const mobile = (r['Mobile'] || '').trim();\n  const phone = normalizePhone(mobile);\n  if (!phone) continue;\n  const name = ((r['Name'] || '').split(' ')[0]) || 'there';\n  const variant = (r['Variant'] || 'A').trim();\n  const templates = MESSAGE_TEMPLATES[leadType][variant] || MESSAGE_TEMPLATES[leadType]['A'];\n  queue.push({\n    name, phone_e164: phone, original_mobile: mobile,\n    message: templates.f2.replace('{name}', name),\n    ts_col_name: 'F2 Sent', msg_col_name: 'F2 Message'\n  });\n}\n\nreturn queue.slice(0, TOTAL_RUN_CAP).map(item => ({ json: item }));"
       },
-      "id": "c54908be-4107-48f4-81bf-33dc10cd0529",
+      "id": "d1bdb010-326f-41ca-a662-5f961b8da71c",
       "name": "Build Send Queue",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -95,7 +95,7 @@
       "parameters": {
         "options": {}
       },
-      "id": "2c45a012-d840-4324-bc38-c2cbe274bc5a",
+      "id": "767801ac-8cd5-48c3-96cc-5cf6127a629d",
       "name": "Split Each Lead",
       "type": "n8n-nodes-base.splitInBatches",
       "typeVersion": 3,
@@ -116,7 +116,7 @@
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth"
       },
-      "id": "d27cf136-e00f-43a9-8115-26f884bc3af9",
+      "id": "be0c251f-1cc7-4bbc-aeaf-c3fa0530c490",
       "name": "Send SMS",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.1,
@@ -133,9 +133,9 @@
     },
     {
       "parameters": {
-        "jsCode": "const item = $('Split Each Lead').item.json;\nconst output = { Mobile: item.original_mobile };\noutput[item.ts_col_name] = 'PENDING';\noutput[item.msg_col_name] = item.message;\nreturn [{ json: output }];"
+        "jsCode": "const item = $('Split Each Lead').item.json;\nconst output = { Mobile: item.original_mobile };\noutput[item.ts_col_name] = 'PENDING';\noutput[item.msg_col_name] = item.message;\nif (item.variant) output['Variant'] = item.variant;\nreturn [{ json: output }];"
       },
-      "id": "6f954933-0ea7-4595-9334-438d2a996807",
+      "id": "75f5580b-8949-4620-8801-2adc1fe8c907",
       "name": "Prepare Update",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -160,249 +160,14 @@
         },
         "columns": {
           "mappingMode": "autoMapInputData",
-          "value": {},
           "matchingColumns": [
             "Mobile"
           ],
-          "schema": [
-            {
-              "id": "Name",
-              "displayName": "Name",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "Mobile",
-              "displayName": "Mobile",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "Email",
-              "displayName": "Email",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "Agency",
-              "displayName": "Agency",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "City",
-              "displayName": "City",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "Date Scraped",
-              "displayName": "Date Scraped",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "Type",
-              "displayName": "Type",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "Initial Sent",
-              "displayName": "Initial Sent",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "Initial Message",
-              "displayName": "Initial Message",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "F1 Sent",
-              "displayName": "F1 Sent",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "F1 Message",
-              "displayName": "F1 Message",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "F2 Sent",
-              "displayName": "F2 Sent",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "F2 Message",
-              "displayName": "F2 Message",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "Replied",
-              "displayName": "Replied",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "Reply After",
-              "displayName": "Reply After",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "Reply Received",
-              "displayName": "Reply Received",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "Reply Text",
-              "displayName": "Reply Text",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "Outcome",
-              "displayName": "Outcome",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "Notes",
-              "displayName": "Notes",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "Status",
-              "displayName": "Status",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "Lead_Replies",
-              "displayName": "Lead_Replies",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "Brandon_Replies",
-              "displayName": "Brandon_Replies",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "row_number",
-              "displayName": "row_number",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "number",
-              "canBeUsedToMatch": true,
-              "readOnly": true,
-              "removed": false
-            }
-          ],
-          "attemptToConvertTypes": false,
-          "convertFieldsToString": false
+          "schema": []
         },
         "options": {}
       },
-      "id": "2fa53d83-ec62-4245-8688-5e16e5f69c4f",
+      "id": "0b4cf229-39e6-4643-a7b9-c5781bcdb781",
       "name": "Update Sent Record",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4,
@@ -421,7 +186,7 @@
       "parameters": {
         "amount": 60
       },
-      "id": "1ea08349-33ca-4f5c-b516-d661e0074816",
+      "id": "af6dc229-ca4e-4769-8431-cee3c91117d7",
       "name": "Wait 60s",
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
@@ -429,7 +194,7 @@
         1856,
         376
       ],
-      "webhookId": "aaaaaaaa-0000-0000-0000-000000000001"
+      "webhookId": "b02d182d-6403-4690-b22e-b216572209ae"
     }
   ],
   "connections": {
@@ -537,9 +302,9 @@
     "templateCredsSetupCompleted": true
   },
   "pinData": {},
-  "versionId": "233fd239-5da8-42a6-8baf-49e9db9047c3",
-  "activeVersionId": "233fd239-5da8-42a6-8baf-49e9db9047c3",
-  "versionCounter": 85,
+  "versionId": "1e697b96-5187-4e13-9ee9-21e4d4c715f0",
+  "activeVersionId": "1e697b96-5187-4e13-9ee9-21e4d4c715f0",
+  "versionCounter": 148,
   "triggerCount": 1,
   "shared": [
     {
@@ -547,24 +312,24 @@
       "createdAt": "2026-03-10T00:33:15.969Z",
       "role": "workflow:owner",
       "workflowId": "YOUR_WF1_WORKFLOW_ID",
-      "projectId": "7SEyEnkrJFQZ387O",
+      "projectId": "YOUR_N8N_PROJECT_ID",
       "project": {
         "updatedAt": "2026-03-09T23:25:14.299Z",
         "createdAt": "2026-03-09T23:01:24.415Z",
-        "id": "7SEyEnkrJFQZ387O",
+        "id": "YOUR_N8N_PROJECT_ID",
         "name": "Your Name <your@email.com>",
         "type": "personal",
         "icon": null,
         "description": null,
-        "creatorId": "bbc22449-1cc6-48f3-a48e-2171661c253f"
+        "creatorId": "YOUR_N8N_USER_ID"
       }
     }
   ],
   "tags": [],
   "activeVersion": {
-    "updatedAt": "2026-03-16T22:30:23.000Z",
-    "createdAt": "2026-03-16T22:29:55.382Z",
-    "versionId": "233fd239-5da8-42a6-8baf-49e9db9047c3",
+    "updatedAt": "2026-04-01T00:49:17.898Z",
+    "createdAt": "2026-04-01T00:49:17.898Z",
+    "versionId": "1e697b96-5187-4e13-9ee9-21e4d4c715f0",
     "workflowId": "YOUR_WF1_WORKFLOW_ID",
     "nodes": [
       {
@@ -574,7 +339,7 @@
           "width": 460,
           "color": 4
         },
-        "id": "bb41f252-1d1d-434b-9780-9bf2e126e6be",
+        "id": "45172858-abfc-4f9a-b4ec-dbdecd21ac02",
         "name": "Workflow Description",
         "type": "n8n-nodes-base.stickyNote",
         "typeVersion": 1,
@@ -593,12 +358,12 @@
               },
               {
                 "field": "cronExpression",
-                "expression": "0,30 0-3 * * *"
+                "expression": "0,30 0-4 * * *"
               }
             ]
           }
         },
-        "id": "d03b1b94-ce3b-47a1-abda-e5d629181405",
+        "id": "2e5a0949-7d63-456d-ae9a-0869634b6559",
         "name": "Schedule Trigger",
         "type": "n8n-nodes-base.scheduleTrigger",
         "typeVersion": 1.2,
@@ -623,7 +388,7 @@
           "combineFilters": "AND",
           "options": {}
         },
-        "id": "15ce35f5-b329-4532-b43e-5c48004560c1",
+        "id": "9b04c93a-215e-49cd-a2f5-c50a2864777c",
         "name": "Read Leads",
         "type": "n8n-nodes-base.googleSheets",
         "typeVersion": 4,
@@ -640,9 +405,9 @@
       },
       {
         "parameters": {
-          "jsCode": "const NZT_OFFSET = 13; // NZDT (UTC+13); change to 12 after April 5 2026\n\nfunction toNZTDateStr(date) {\n  const nzt = new Date(date.getTime() + NZT_OFFSET * 3600000);\n  return nzt.toISOString().slice(0, 10);\n}\n\nfunction parseNZTStr(s) {\n  // \"2026-03-10 09:00\" stored as NZT \u2014 parse back to UTC\n  if (!s || s === 'PENDING') return null;\n  const cleaned = s.trim().replace(' ', 'T');\n  return new Date(cleaned + ':00+13:00');\n}\n\nfunction normalizePhone(phone) {\n  if (!phone) return null;\n  const c = phone.replace(/[\\s\\-\\(\\)]/g, '');\n  if (c.startsWith('0')) return '+64' + c.slice(1);\n  if (c.startsWith('+64')) return c;\n  return null;\n}\n\nconst MSG_INITIAL = \"Hi {name}, I help NZ agents auto-respond to Trade Me enquiries instantly \u2014 no missed leads when you're at an open home. Worth a chat? - Brandon\";\nconst MSG_F1 = \"Hey {name}, just following up. If you're not already sorted with automated lead follow-up, happy to show you what it looks like. - Brandon\";\nconst MSG_F2 = \"Last one from me {name} \u2014 if you'd like to see how it works, happy to send a short video or jump on a quick call. Otherwise no worries. - Brandon\";\n\nconst DAILY_CAP = 50;\nconst PER_RUN_CAP = 25;   // max new initial sends per run\nconst TOTAL_RUN_CAP = 25; // hard cap on total messages sent per run (initial + F1 + F2)\n\nconst now = new Date();\n\n// \u2500\u2500 Send window gate: Mon\u2013Fri 9:00am\u20134:30pm NZT only \u2500\u2500\nconst nztNow = new Date(now.getTime() + NZT_OFFSET * 3600000);\nconst nztHour = nztNow.getUTCHours();\nconst nztMinute = nztNow.getUTCMinutes();\nconst nztDay = nztNow.getUTCDay(); // 0=Sun, 1=Mon\u20265=Fri, 6=Sat\nconst isWeekday = nztDay >= 1 && nztDay <= 5;\nconst afterStart = nztHour >= 9;\nconst beforeEnd = nztHour < 16 || (nztHour === 16 && nztMinute <= 30);\nif (!isWeekday || !afterStart || !beforeEnd) return [];\n\nconst todayNZT = toNZTDateStr(now);\nconst rows = $input.all();\n\n// Count today's initial sends \u2014 includes PENDING rows (attempted sends count toward daily cap)\nlet todaySentCount = 0;\nfor (const item of rows) {\n  const g = (item.json['Initial Sent'] || '').trim();\n  if (!g) continue;\n  if (g === 'PENDING') {\n    // Count PENDING as today's attempt\n    todaySentCount++;\n    continue;\n  }\n  try {\n    const sentDate = toNZTDateStr(parseNZTStr(g));\n    if (sentDate === todayNZT) todaySentCount++;\n  } catch(e) {}\n}\n\nconst remaining = Math.max(0, DAILY_CAP - todaySentCount);\nconst initialCap = Math.min(remaining, PER_RUN_CAP);\n\nconst queue = [];\n\n// --- Initial sends ---\n// Eligible: Initial Sent is empty (not PENDING, not a timestamp)\nlet initialCount = 0;\nfor (const item of rows) {\n  if (initialCount >= initialCap) break;\n  const r = item.json;\n  const leadType = (r['Type'] || '').trim();\n  if (leadType === 'Commercial' || leadType === 'Property Management') continue;\n  const status = (r['Status'] || '').trim();\n  const g = (r['Initial Sent'] || '').trim();\n  if (g || status === 'Opted Out') continue; // skip if any value (incl. PENDING)\n  const mobile = (r['Mobile'] || '').trim();\n  const phone = normalizePhone(mobile);\n  if (!phone) continue;\n  const name = ((r['Name'] || '').split(' ')[0]) || 'there';\n  queue.push({\n    name, phone_e164: phone, original_mobile: mobile,\n    message: MSG_INITIAL.replace('{name}', name),\n    ts_col_name: 'Initial Sent', msg_col_name: 'Initial Message'\n  });\n  initialCount++;\n}\n\n// --- Followup 1 (3h+ after initial confirmed delivery) ---\n// Eligible: Initial Sent is a real timestamp (not PENDING), F1 Sent empty, no reply\nfor (const item of rows) {\n  const r = item.json;\n  const leadType = (r['Type'] || '').trim();\n  if (leadType === 'Commercial' || leadType === 'Property Management') continue;\n  const status = (r['Status'] || '').trim();\n  const g = (r['Initial Sent'] || '').trim();\n  const i = (r['F1 Sent'] || '').trim();\n  const replied = (r['Replied'] || '').trim();\n  if (!g || g === 'PENDING' || i || replied === 'Y' || status === 'Opted Out') continue;\n  const gTime = parseNZTStr(g);\n  if (!gTime) continue;\n  const hoursAgo = (now - gTime) / 3600000;\n  if (hoursAgo < 3) continue;\n  const mobile = (r['Mobile'] || '').trim();\n  const phone = normalizePhone(mobile);\n  if (!phone) continue;\n  const name = ((r['Name'] || '').split(' ')[0]) || 'there';\n  queue.push({\n    name, phone_e164: phone, original_mobile: mobile,\n    message: MSG_F1.replace('{name}', name),\n    ts_col_name: 'F1 Sent', msg_col_name: 'F1 Message'\n  });\n}\n\n// --- Followup 2 (21h+ after F1 confirmed delivery) ---\n// Eligible: F1 Sent is a real timestamp (not PENDING), F2 Sent empty, no reply\nfor (const item of rows) {\n  const r = item.json;\n  const leadType = (r['Type'] || '').trim();\n  if (leadType === 'Commercial' || leadType === 'Property Management') continue;\n  const status = (r['Status'] || '').trim();\n  const i = (r['F1 Sent'] || '').trim();\n  const k = (r['F2 Sent'] || '').trim();\n  const replied = (r['Replied'] || '').trim();\n  if (!i || i === 'PENDING' || k || replied === 'Y' || status === 'Opted Out') continue;\n  const iTime = parseNZTStr(i);\n  if (!iTime) continue;\n  const hoursAgo = (now - iTime) / 3600000;\n  if (hoursAgo < 21) continue;\n  const mobile = (r['Mobile'] || '').trim();\n  const phone = normalizePhone(mobile);\n  if (!phone) continue;\n  const name = ((r['Name'] || '').split(' ')[0]) || 'there';\n  queue.push({\n    name, phone_e164: phone, original_mobile: mobile,\n    message: MSG_F2.replace('{name}', name),\n    ts_col_name: 'F2 Sent', msg_col_name: 'F2 Message'\n  });\n}\n\nreturn queue.slice(0, TOTAL_RUN_CAP).map(item => ({ json: item }));"
+          "jsCode": "const NZT_OFFSET = 13; // NZDT (UTC+13); change to 12 after April 5 2026\n\nfunction toNZTDateStr(date) {\n  const nzt = new Date(date.getTime() + NZT_OFFSET * 3600000);\n  return nzt.toISOString().slice(0, 10);\n}\n\nfunction parseNZTStr(s) {\n  // \"2026-03-10 09:00\" stored as NZT \u2014 parse back to UTC\n  if (!s || s === 'PENDING') return null;\n  const cleaned = s.trim().replace(' ', 'T');\n  return new Date(cleaned + ':00+13:00');\n}\n\nfunction normalizePhone(phone) {\n  if (!phone) return null;\n  const c = phone.replace(/[\\s\\-\\(\\)]/g, '');\n  if (c.startsWith('0')) return '+64' + c.slice(1);\n  if (c.startsWith('+64')) return c;\n  return null;\n}\n\nconst MESSAGE_TEMPLATES = {\n  'Residential': {\n    A: {\n      initial: \"Hi {name}, I help NZ agents auto-respond to Trade Me enquiries instantly, no missed leads when you're at an open home. Happy to set it up for free. Worth a chat? Brandon\",\n      f1: \"Hey {name}, just following up. If you're not already sorted with automated lead follow-up, happy to show you what it looks like. Brandon\",\n      f2: \"Last one from me {name}. Happy to jump on a 10-min call to walk you through it. Otherwise no worries. Brandon\"\n    },\n    B: {\n      initial: \"Hi {name}, quick one, how do you handle Trade Me enquiries when you're at an open home? Building something for NZ agents and curious. Brandon\",\n      f1: \"Hey {name}, following up on my question. Even a quick reply helps, genuinely curious how you're handling it. Brandon\",\n      f2: \"Last one from me {name}. Happy to jump on a 10-min call to walk you through it. Otherwise no worries. Brandon\"\n    }\n  },\n  'Development': {\n    A: {\n      initial: \"Hi {name}, I help NZ development teams handle the enquiry flood at launch so no EOI gets dropped or left waiting. Happy to show you what it looks like. Worth a chat? Brandon\",\n      f1: \"Hey {name}, following up. If your next project launch means juggling buyer enquiries across the team, I can make that a lot smoother. Brandon\",\n      f2: \"Last one from me {name}. Happy to jump on a 10-min call to walk you through it. Otherwise no worries. Brandon\"\n    },\n    B: {\n      initial: \"Hi {name}, quick one, how do you keep track of buyer enquiries across a project launch? Building something for NZ development teams. Curious. Brandon\",\n      f1: \"Hey {name}, following up on my question. Happy to share what I'm building if you're curious. Brandon\",\n      f2: \"Last one from me {name}. Happy to jump on a 10-min call to walk you through it. Otherwise no worries. Brandon\"\n    }\n  },\n  'Commercial': {\n    A: {\n      initial: \"Hi {name}, I help NZ commercial agents respond to serious enquiries faster so deals don't go cold while you're out with another client. Worth a chat? Brandon\",\n      f1: \"Hey {name}, following up. If enquiry response time is ever a bottleneck, I've got something that could help. Happy to show you what it looks like. Brandon\",\n      f2: \"Last one from me {name}. Happy to jump on a 10-min call to walk you through it. Otherwise no worries. Brandon\"\n    },\n    B: {\n      initial: \"Hi {name}, quick one, how do you handle enquiries that come in while you're out with another client? Building something for NZ commercial agents. Curious. Brandon\",\n      f1: \"Hey {name}, following up on my question. Happy to share what I'm building if you've got 2 mins. Brandon\",\n      f2: \"Last one from me {name}. Happy to jump on a 10-min call to walk you through it. Otherwise no worries. Brandon\"\n    }\n  },\n  'Property Management': {\n    A: {\n      initial: \"Hi {name}, I help NZ property managers cut hours off routine tenant and landlord comms like maintenance updates, rent reminders, that kind of thing. Happy to show you what it looks like. Worth a chat? Brandon\",\n      f1: \"Hey {name}, following up. If your team spends a lot of time on routine tenant messages, I've built something that handles it for you. Happy to show you what it looks like. Brandon\",\n      f2: \"Last one from me {name}. Happy to jump on a 10-min call to walk you through it. Otherwise no worries. Brandon\"\n    },\n    B: {\n      initial: \"Hi {name}, quick one, how much time does your team spend on routine tenant comms each week? Building something for NZ property managers. Curious. Brandon\",\n      f1: \"Hey {name}, following up on my question. Happy to share what I'm building for PM businesses. Brandon\",\n      f2: \"Last one from me {name}. Happy to jump on a 10-min call to walk you through it. Otherwise no worries. Brandon\"\n    }\n  }\n};\n\nconst DAILY_CAP = 50;\nconst PER_RUN_CAP = 25;   // max new initial sends per run\nconst TOTAL_RUN_CAP = 25; // hard cap on total messages sent per run (initial + F1 + F2)\n\nconst now = new Date();\n\n// \u2500\u2500 Send window gate: Mon\u2013Fri 9:00am\u20134:30pm NZT only \u2500\u2500\nconst nztNow = new Date(now.getTime() + NZT_OFFSET * 3600000);\nconst nztHour = nztNow.getUTCHours();\nconst nztMinute = nztNow.getUTCMinutes();\nconst nztDay = nztNow.getUTCDay(); // 0=Sun, 1=Mon\u20265=Fri, 6=Sat\nconst isWeekday = nztDay >= 1 && nztDay <= 5;\nconst afterStart = nztHour >= 9;\nconst beforeEnd = nztHour < 16 || (nztHour === 16 && nztMinute <= 30);\nif (!isWeekday || !afterStart || !beforeEnd) return [];\n\nconst todayNZT = toNZTDateStr(now);\nconst rows = $input.all();\n\n// Count today's initial sends \u2014 includes PENDING rows (attempted sends count toward daily cap)\nlet todaySentCount = 0;\nfor (const item of rows) {\n  const g = (item.json['Initial Sent'] || '').trim();\n  if (!g) continue;\n  if (g === 'PENDING') {\n    // Count PENDING as today's attempt\n    todaySentCount++;\n    continue;\n  }\n  try {\n    const sentDate = toNZTDateStr(parseNZTStr(g));\n    if (sentDate === todayNZT) todaySentCount++;\n  } catch(e) {}\n}\n\nconst remaining = Math.max(0, DAILY_CAP - todaySentCount);\nconst initialCap = Math.min(remaining, PER_RUN_CAP);\n\nconst queue = [];\n\n// --- Initial sends ---\n// Eligible: Initial Sent is empty (not PENDING, not a timestamp)\nlet initialCount = 0;\nfor (const item of rows) {\n  if (initialCount >= initialCap) break;\n  const r = item.json;\n  const leadType = (r['Type'] || '').trim();\n  if (!MESSAGE_TEMPLATES[leadType]) continue;\n  const status = (r['Status'] || '').trim();\n  const g = (r['Initial Sent'] || '').trim();\n  if (g || status === 'Opted Out') continue; // skip if any value (incl. PENDING)\n  const mobile = (r['Mobile'] || '').trim();\n  const phone = normalizePhone(mobile);\n  if (!phone) continue;\n  const name = ((r['Name'] || '').split(' ')[0]) || 'there';\n  const variant = Math.random() < 0.7 ? 'A' : 'B';\n  const templates = MESSAGE_TEMPLATES[leadType][variant];\n  queue.push({\n    name, phone_e164: phone, original_mobile: mobile,\n    message: templates.initial.replace('{name}', name),\n    ts_col_name: 'Initial Sent', msg_col_name: 'Initial Message',\n    variant\n  });\n  initialCount++;\n}\n\n// --- Followup 1 (3h+ after initial confirmed delivery) ---\n// Eligible: Initial Sent is a real timestamp (not PENDING), F1 Sent empty, no reply\nfor (const item of rows) {\n  const r = item.json;\n  const leadType = (r['Type'] || '').trim();\n  if (!MESSAGE_TEMPLATES[leadType]) continue;\n  const status = (r['Status'] || '').trim();\n  const g = (r['Initial Sent'] || '').trim();\n  const i = (r['F1 Sent'] || '').trim();\n  const replied = (r['Replied'] || '').trim();\n  if (!g || g === 'PENDING' || i || replied === 'TRUE' || status === 'Opted Out') continue;\n  const gTime = parseNZTStr(g);\n  if (!gTime) continue;\n  const hoursAgo = (now - gTime) / 3600000;\n  if (hoursAgo < 3) continue;\n  const mobile = (r['Mobile'] || '').trim();\n  const phone = normalizePhone(mobile);\n  if (!phone) continue;\n  const name = ((r['Name'] || '').split(' ')[0]) || 'there';\n  const variant = (r['Variant'] || 'A').trim();\n  const templates = MESSAGE_TEMPLATES[leadType][variant] || MESSAGE_TEMPLATES[leadType]['A'];\n  queue.push({\n    name, phone_e164: phone, original_mobile: mobile,\n    message: templates.f1.replace('{name}', name),\n    ts_col_name: 'F1 Sent', msg_col_name: 'F1 Message'\n  });\n}\n\n// --- Followup 2 (21h+ after F1 confirmed delivery) ---\n// Eligible: F1 Sent is a real timestamp (not PENDING), F2 Sent empty, no reply\nfor (const item of rows) {\n  const r = item.json;\n  const leadType = (r['Type'] || '').trim();\n  if (!MESSAGE_TEMPLATES[leadType]) continue;\n  const status = (r['Status'] || '').trim();\n  const i = (r['F1 Sent'] || '').trim();\n  const k = (r['F2 Sent'] || '').trim();\n  const replied = (r['Replied'] || '').trim();\n  if (!i || i === 'PENDING' || k || replied === 'TRUE' || status === 'Opted Out') continue;\n  const iTime = parseNZTStr(i);\n  if (!iTime) continue;\n  const hoursAgo = (now - iTime) / 3600000;\n  if (hoursAgo < 21) continue;\n  const mobile = (r['Mobile'] || '').trim();\n  const phone = normalizePhone(mobile);\n  if (!phone) continue;\n  const name = ((r['Name'] || '').split(' ')[0]) || 'there';\n  const variant = (r['Variant'] || 'A').trim();\n  const templates = MESSAGE_TEMPLATES[leadType][variant] || MESSAGE_TEMPLATES[leadType]['A'];\n  queue.push({\n    name, phone_e164: phone, original_mobile: mobile,\n    message: templates.f2.replace('{name}', name),\n    ts_col_name: 'F2 Sent', msg_col_name: 'F2 Message'\n  });\n}\n\nreturn queue.slice(0, TOTAL_RUN_CAP).map(item => ({ json: item }));"
         },
-        "id": "c54908be-4107-48f4-81bf-33dc10cd0529",
+        "id": "d1bdb010-326f-41ca-a662-5f961b8da71c",
         "name": "Build Send Queue",
         "type": "n8n-nodes-base.code",
         "typeVersion": 2,
@@ -655,7 +420,7 @@
         "parameters": {
           "options": {}
         },
-        "id": "2c45a012-d840-4324-bc38-c2cbe274bc5a",
+        "id": "767801ac-8cd5-48c3-96cc-5cf6127a629d",
         "name": "Split Each Lead",
         "type": "n8n-nodes-base.splitInBatches",
         "typeVersion": 3,
@@ -668,35 +433,34 @@
         "parameters": {
           "method": "POST",
           "url": "https://api.textbee.dev/api/v1/gateway/devices/YOUR_TEXTBEE_DEVICE_ID/send-sms",
-          "sendHeaders": true,
-          "headerParameters": {
-            "parameters": [
-              {
-                "name": "x-api-key",
-                "value": "={{ $vars.TEXTBEE_API_KEY }}"
-              }
-            ]
-          },
           "sendBody": true,
           "contentType": "raw",
           "rawContentType": "application/json",
           "body": "={{ JSON.stringify({\"recipients\": [$json.phone_e164], \"message\": $json.message}) }}",
-          "options": {}
+          "options": {},
+          "authentication": "genericCredentialType",
+          "genericAuthType": "httpHeaderAuth"
         },
-        "id": "d27cf136-e00f-43a9-8115-26f884bc3af9",
+        "id": "be0c251f-1cc7-4bbc-aeaf-c3fa0530c490",
         "name": "Send SMS",
         "type": "n8n-nodes-base.httpRequest",
         "typeVersion": 4.1,
         "position": [
           1184,
           304
-        ]
+        ],
+        "credentials": {
+          "httpHeaderAuth": {
+            "id": "YOUR_TEXTBEE_HEADER_AUTH_CREDENTIAL_ID",
+            "name": "Textbee API Key"
+          }
+        }
       },
       {
         "parameters": {
-          "jsCode": "const item = $('Split Each Lead').item.json;\nconst output = { Mobile: item.original_mobile };\noutput[item.ts_col_name] = 'PENDING';\noutput[item.msg_col_name] = item.message;\nreturn [{ json: output }];"
+          "jsCode": "const item = $('Split Each Lead').item.json;\nconst output = { Mobile: item.original_mobile };\noutput[item.ts_col_name] = 'PENDING';\noutput[item.msg_col_name] = item.message;\nif (item.variant) output['Variant'] = item.variant;\nreturn [{ json: output }];"
         },
-        "id": "6f954933-0ea7-4595-9334-438d2a996807",
+        "id": "75f5580b-8949-4620-8801-2adc1fe8c907",
         "name": "Prepare Update",
         "type": "n8n-nodes-base.code",
         "typeVersion": 2,
@@ -721,249 +485,14 @@
           },
           "columns": {
             "mappingMode": "autoMapInputData",
-            "value": {},
             "matchingColumns": [
               "Mobile"
             ],
-            "schema": [
-              {
-                "id": "Name",
-                "displayName": "Name",
-                "required": false,
-                "defaultMatch": false,
-                "display": true,
-                "type": "string",
-                "canBeUsedToMatch": true,
-                "removed": false
-              },
-              {
-                "id": "Mobile",
-                "displayName": "Mobile",
-                "required": false,
-                "defaultMatch": false,
-                "display": true,
-                "type": "string",
-                "canBeUsedToMatch": true,
-                "removed": false
-              },
-              {
-                "id": "Email",
-                "displayName": "Email",
-                "required": false,
-                "defaultMatch": false,
-                "display": true,
-                "type": "string",
-                "canBeUsedToMatch": true,
-                "removed": false
-              },
-              {
-                "id": "Agency",
-                "displayName": "Agency",
-                "required": false,
-                "defaultMatch": false,
-                "display": true,
-                "type": "string",
-                "canBeUsedToMatch": true,
-                "removed": false
-              },
-              {
-                "id": "City",
-                "displayName": "City",
-                "required": false,
-                "defaultMatch": false,
-                "display": true,
-                "type": "string",
-                "canBeUsedToMatch": true,
-                "removed": false
-              },
-              {
-                "id": "Date Scraped",
-                "displayName": "Date Scraped",
-                "required": false,
-                "defaultMatch": false,
-                "display": true,
-                "type": "string",
-                "canBeUsedToMatch": true,
-                "removed": false
-              },
-              {
-                "id": "Type",
-                "displayName": "Type",
-                "required": false,
-                "defaultMatch": false,
-                "display": true,
-                "type": "string",
-                "canBeUsedToMatch": true,
-                "removed": false
-              },
-              {
-                "id": "Initial Sent",
-                "displayName": "Initial Sent",
-                "required": false,
-                "defaultMatch": false,
-                "display": true,
-                "type": "string",
-                "canBeUsedToMatch": true,
-                "removed": false
-              },
-              {
-                "id": "Initial Message",
-                "displayName": "Initial Message",
-                "required": false,
-                "defaultMatch": false,
-                "display": true,
-                "type": "string",
-                "canBeUsedToMatch": true,
-                "removed": false
-              },
-              {
-                "id": "F1 Sent",
-                "displayName": "F1 Sent",
-                "required": false,
-                "defaultMatch": false,
-                "display": true,
-                "type": "string",
-                "canBeUsedToMatch": true,
-                "removed": false
-              },
-              {
-                "id": "F1 Message",
-                "displayName": "F1 Message",
-                "required": false,
-                "defaultMatch": false,
-                "display": true,
-                "type": "string",
-                "canBeUsedToMatch": true,
-                "removed": false
-              },
-              {
-                "id": "F2 Sent",
-                "displayName": "F2 Sent",
-                "required": false,
-                "defaultMatch": false,
-                "display": true,
-                "type": "string",
-                "canBeUsedToMatch": true,
-                "removed": false
-              },
-              {
-                "id": "F2 Message",
-                "displayName": "F2 Message",
-                "required": false,
-                "defaultMatch": false,
-                "display": true,
-                "type": "string",
-                "canBeUsedToMatch": true,
-                "removed": false
-              },
-              {
-                "id": "Replied",
-                "displayName": "Replied",
-                "required": false,
-                "defaultMatch": false,
-                "display": true,
-                "type": "string",
-                "canBeUsedToMatch": true,
-                "removed": false
-              },
-              {
-                "id": "Reply After",
-                "displayName": "Reply After",
-                "required": false,
-                "defaultMatch": false,
-                "display": true,
-                "type": "string",
-                "canBeUsedToMatch": true,
-                "removed": false
-              },
-              {
-                "id": "Reply Received",
-                "displayName": "Reply Received",
-                "required": false,
-                "defaultMatch": false,
-                "display": true,
-                "type": "string",
-                "canBeUsedToMatch": true,
-                "removed": false
-              },
-              {
-                "id": "Reply Text",
-                "displayName": "Reply Text",
-                "required": false,
-                "defaultMatch": false,
-                "display": true,
-                "type": "string",
-                "canBeUsedToMatch": true,
-                "removed": false
-              },
-              {
-                "id": "Outcome",
-                "displayName": "Outcome",
-                "required": false,
-                "defaultMatch": false,
-                "display": true,
-                "type": "string",
-                "canBeUsedToMatch": true,
-                "removed": false
-              },
-              {
-                "id": "Notes",
-                "displayName": "Notes",
-                "required": false,
-                "defaultMatch": false,
-                "display": true,
-                "type": "string",
-                "canBeUsedToMatch": true,
-                "removed": false
-              },
-              {
-                "id": "Status",
-                "displayName": "Status",
-                "required": false,
-                "defaultMatch": false,
-                "display": true,
-                "type": "string",
-                "canBeUsedToMatch": true,
-                "removed": false
-              },
-              {
-                "id": "Lead_Replies",
-                "displayName": "Lead_Replies",
-                "required": false,
-                "defaultMatch": false,
-                "display": true,
-                "type": "string",
-                "canBeUsedToMatch": true,
-                "removed": false
-              },
-              {
-                "id": "Brandon_Replies",
-                "displayName": "Brandon_Replies",
-                "required": false,
-                "defaultMatch": false,
-                "display": true,
-                "type": "string",
-                "canBeUsedToMatch": true,
-                "removed": false
-              },
-              {
-                "id": "row_number",
-                "displayName": "row_number",
-                "required": false,
-                "defaultMatch": false,
-                "display": true,
-                "type": "number",
-                "canBeUsedToMatch": true,
-                "readOnly": true,
-                "removed": false
-              }
-            ],
-            "attemptToConvertTypes": false,
-            "convertFieldsToString": false
+            "schema": []
           },
           "options": {}
         },
-        "id": "2fa53d83-ec62-4245-8688-5e16e5f69c4f",
+        "id": "0b4cf229-39e6-4643-a7b9-c5781bcdb781",
         "name": "Update Sent Record",
         "type": "n8n-nodes-base.googleSheets",
         "typeVersion": 4,
@@ -982,7 +511,7 @@
         "parameters": {
           "amount": 60
         },
-        "id": "1ea08349-33ca-4f5c-b516-d661e0074816",
+        "id": "af6dc229-ca4e-4769-8431-cee3c91117d7",
         "name": "Wait 60s",
         "type": "n8n-nodes-base.wait",
         "typeVersion": 1.1,
@@ -990,7 +519,7 @@
           1856,
           376
         ],
-        "webhookId": "aaaaaaaa-0000-0000-0000-000000000001"
+        "webhookId": "b02d182d-6403-4690-b22e-b216572209ae"
       }
     ],
     "connections": {
@@ -1085,17 +614,25 @@
       }
     },
     "authors": "Your Name",
-    "name": "Version 233fd239",
-    "description": "",
+    "name": null,
+    "description": null,
     "autosaved": false,
     "workflowPublishHistory": [
       {
-        "createdAt": "2026-03-16T22:30:23.860Z",
-        "id": 79,
+        "createdAt": "2026-04-01T00:49:17.944Z",
+        "id": 196,
         "workflowId": "YOUR_WF1_WORKFLOW_ID",
-        "versionId": "233fd239-5da8-42a6-8baf-49e9db9047c3",
+        "versionId": "1e697b96-5187-4e13-9ee9-21e4d4c715f0",
         "event": "activated",
-        "userId": "bbc22449-1cc6-48f3-a48e-2171661c253f"
+        "userId": "YOUR_N8N_USER_ID"
+      },
+      {
+        "createdAt": "2026-04-01T00:49:17.932Z",
+        "id": 195,
+        "workflowId": "YOUR_WF1_WORKFLOW_ID",
+        "versionId": "1e697b96-5187-4e13-9ee9-21e4d4c715f0",
+        "event": "deactivated",
+        "userId": "YOUR_N8N_USER_ID"
       }
     ]
   }
