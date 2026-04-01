@@ -302,8 +302,8 @@
     "templateCredsSetupCompleted": true
   },
   "pinData": {},
-  "versionId": "1e697b96-5187-4e13-9ee9-21e4d4c715f0",
-  "activeVersionId": "1e697b96-5187-4e13-9ee9-21e4d4c715f0",
+  "versionId": "YOUR_WF1_VERSION_ID",
+  "activeVersionId": "YOUR_WF1_VERSION_ID",
   "versionCounter": 148,
   "triggerCount": 1,
   "shared": [
@@ -329,7 +329,7 @@
   "activeVersion": {
     "updatedAt": "2026-04-01T00:49:17.898Z",
     "createdAt": "2026-04-01T00:49:17.898Z",
-    "versionId": "1e697b96-5187-4e13-9ee9-21e4d4c715f0",
+    "versionId": "YOUR_WF1_VERSION_ID",
     "workflowId": "YOUR_WF1_WORKFLOW_ID",
     "nodes": [
       {
@@ -622,7 +622,7 @@
         "createdAt": "2026-04-01T00:49:17.944Z",
         "id": 196,
         "workflowId": "YOUR_WF1_WORKFLOW_ID",
-        "versionId": "1e697b96-5187-4e13-9ee9-21e4d4c715f0",
+        "versionId": "YOUR_WF1_VERSION_ID",
         "event": "activated",
         "userId": "YOUR_N8N_USER_ID"
       },
@@ -630,7 +630,7 @@
         "createdAt": "2026-04-01T00:49:17.932Z",
         "id": 195,
         "workflowId": "YOUR_WF1_WORKFLOW_ID",
-        "versionId": "1e697b96-5187-4e13-9ee9-21e4d4c715f0",
+        "versionId": "YOUR_WF1_VERSION_ID",
         "event": "deactivated",
         "userId": "YOUR_N8N_USER_ID"
       }
